@@ -85,6 +85,7 @@ def basket_price_mc(
         # Simulate prices according to GBM process
         for k in range(N):
             prices[k] = forward[k] * np.exp(- 0.5 * texp * cov_m[k, k] + np.sqrt(texp) * chol_m[k, :] @ znorm_m)
+#         prices = forward[:, None]*np.exp(-0.5*texp*np.diag(cov_m)[:, None] + np.sqrt(texp) * chol_m @ znorm_m)
     
     else:
         # bsm = False: normal model
@@ -119,7 +120,9 @@ def basket_price_norm_analytic(
     forward_basket = np.inner(weights, forward)
     
     # 2. Compute the normal volatility of basket
-    vol_basket = vol * forward
+    # The spot price works better when the interest rate is non zero
+#     vol_basket = vol * forward
+    vol_basket = vol * spot
     Sigma_basket = vol_basket * cor_m * vol_basket[:, None]
     sigma_N_basket = np.sqrt(weights @ Sigma_basket @ weights[:, None])  
 
