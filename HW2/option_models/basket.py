@@ -120,9 +120,7 @@ def basket_price_norm_analytic(
     forward_basket = np.inner(weights, forward)
     
     # 2. Compute the normal volatility of basket
-    # The spot price works better when the interest rate is non zero
-#     vol_basket = vol * forward
-    vol_basket = vol * spot
+    vol_basket = vol * forward
     Sigma_basket = vol_basket * cor_m * vol_basket[:, None]
     sigma_N_basket = np.sqrt(weights @ Sigma_basket @ weights[:, None])  
 
