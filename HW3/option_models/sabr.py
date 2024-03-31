@@ -6,254 +6,308 @@ Created on Tue Oct 10
 """
 
 import numpy as np
-import scipy.stats as ss
-import scipy.optimize as sopt
 import pyfeng as pf
+import abc
 
-'''
-MC model class for Beta=1
-'''
-class ModelBsmMC:
-    beta = 1.0   # fixed (not used)
+class ModelABC(abc.ABC):
+    beta = 1   # fixed (not used)
     vov, rho = 0.0, 0.0
-    sigma, intr, divr = None, None, None
-    bsm_model = None
-    '''
-    You may define more members for MC: time step, etc
-    '''
-    
-    def __init__(self, sigma, vov=0, rho=0.0, beta=1.0, intr=0, divr=0, n_samples=1_000, n_steps=100):
-        self.n_samples = n_samples
-        self.n_steps = n_steps
+    sigma, intr = None, None
+
+    ### Numerical Parameters
+    dt = 0.1
+    n_path = 10000
+
+    def __init__(self, sigma, vov=0, rho=0.0, beta=1.0, intr=0.0):
         self.sigma = sigma
         self.vov = vov
         self.rho = rho
+        self.beta = beta
         self.intr = intr
-        self.divr = divr
-        self.bsm_model = pf.Bsm(sigma, intr=intr, divr=divr)
-        
-    def bsm_vol(self, strike, spot, texp=None, sigma=None):
+
+    def base_model(self, sigma=None):
+        if sigma is None:
+            sigma = self.sigma
+
+        if self.beta == 0:
+            return pf.Norm(sigma, intr=self.intr, is_fwd=True)
+        elif self.beta == 1:
+            return pf.Bsm(sigma, intr=self.intr, is_fwd=True)
+        else:
+            raise ValueError(f'0<beta<1 not supported')
+
+    def vol_smile(self, strike, spot, texp=1.0):
         ''''
         From the price from self.price() compute the implied vol
         Use self.bsm_model.impvol() method
         '''
-        price = self.price(self, strike, spot)
-        return self.bsm_model.impvol(price, strike, spot, texp)
-    
-    def price(self, strike, spot, texp=None, sigma=None, cp=1):
-        '''
-        Your MC routine goes here
-        Generate paths for vol and price first. Then get prices (vector) for all strikes
-        You may fix the random number seed
-        '''
-#         np.random.seed(12345)
-        
-        # Set T to expiration time
-        T = texp
-        delta_t = T / self.n_steps
-        # Allocate space for storing the results
-        prices = np.zeros((self.n_steps, self.n_samples))
-        vols = np.zeros((self.n_steps, self.n_samples))
-        
-        # Generate Correlated Random Numbers
-        W = np.random.randn(self.n_steps, self.n_samples)        
-        Z = self.rho * W + np.sqrt(1 - self.rho ** 2) * np.random.randn(self.n_steps, self.n_samples)
-        
-        # Set the initial values
-        prices[0, :] = spot
-        vols[0, :] = self.sigma
-        
-        for k in range(self.n_steps-1):
-            prices[k+1, :] = prices[k, :] * np.exp(vols[k, :] * W[k, :] * np.sqrt(delta_t) - 0.5 * vols[k, :]**2 * delta_t)
-            vols[k+1, :] = vols[k, :] * np.exp(self.vov * Z[k, :] * np.sqrt(delta_t) - 0.5 * self.vov**2 * delta_t)
-                
-        return np.array([np.mean(cp*np.fmax(prices[-1, :] - K, 0)) for K in strike])
-        
+        price = self.price(strike, spot, texp, cp=1)
+        iv = self.base_model().impvol(price, strike, spot, texp, cp=1)
+        return iv
 
-'''
-MC model class for Beta=0
-'''
-class ModelNormalMC:
-    beta = 0.0   # fixed (not used)
-    vov, rho = 0.0, 0.0
-    sigma, intr, divr = None, None, None
-    normal_model = None
-    
-    def __init__(self, sigma, vov=0, rho=0.0, beta=0.0, intr=0, divr=0, n_samples=1_000, n_steps=100):
-        self.n_samples = n_samples
-        self.n_steps = n_steps
-        self.sigma = sigma
-        self.vov = vov
-        self.rho = rho
-        self.intr = intr
-        self.divr = divr
-        self.normal_model = pf.Norm(sigma, intr=intr, divr=divr)
-        
-    def norm_vol(self, strike, spot, texp=None, sigma=None):
-        ''''
-        From the price from self.price() compute the implied vol.
-        Use self.normal_model.impvol() method        
-        '''
-        price = self.price(self, strike, spot)
-        return self.normal_model.impvol(price, strike, spot, texp)
-        
-    def price(self, strike, spot, texp=None, sigma=None, cp=1):
-        '''
-        Your MC routine goes here
-        Generate paths for vol and price first. Then get prices (vector) for all strikes
-        You may fix the random number seed
-        '''
-#         np.random.seed(12345)
-        
-        # Set T to expiration time
-        T = texp
-        delta_t = T / self.n_steps
-        # Allocate space for storing the results
-        prices = np.zeros((self.n_steps, self.n_samples))
-        vols = np.zeros((self.n_steps, self.n_samples))
-        
-        # Generate Correlated Random Numbers
-        W = np.random.randn(self.n_steps, self.n_samples)        
-        Z = self.rho * W + np.sqrt(1 - self.rho ** 2) * np.random.randn(self.n_steps, self.n_samples)
-        
-        # Set the initial values
-        prices[0, :] = spot
-        vols[0, :] = self.sigma
-        
-        for k in range(self.n_steps-1):
-            prices[k+1, :] = prices[k, :] + vols[k, :] * W[k, :] * np.sqrt(delta_t)
-            vols[k+1, :] = vols[k, :] * np.exp(self.vov * Z[k, :] * np.sqrt(delta_t) - 0.5 * self.vov**2 * delta_t)
-                
-        return np.array([np.mean(cp*np.fmax(prices[-1, :] - K, 0)) for K in strike])
+    @abc.abstractmethod
+    def price(self, strike, spot, texp=1.0, cp=1):
+        """
+        Vanilla option price
 
-'''
-Conditional MC model class for Beta=1
-'''
-class ModelBsmCondMC:
+        Args:
+            strike:
+            spot:
+            texp:
+            cp:
+
+        Returns:
+
+        """
+        return NotImplementedError
+
+    def sigma_path(self, texp):
+        """
+        Path of sigma_t over the time discretization
+
+        Args:
+            texp:
+
+        Returns:
+
+        """
+        n_dt = int(np.ceil(texp / self.dt))
+        tobs = np.arange(1, n_dt + 1) / n_dt * texp
+        dt = texp / n_dt
+        assert texp == tobs[-1]
+
+        Z_t = np.cumsum(np.random.standard_normal((n_dt, self.n_path)) * np.sqrt(dt), axis=0)
+        sigma_t = np.exp(self.vov * (Z_t - self.vov/2 * tobs[:, None]))
+        sigma_t = np.insert(sigma_t, 0, np.ones(sigma_t.shape[1]), axis=0)  #?
+
+        return sigma_t
+
+    def intvar_normalized(self, sigma_path):
+        """
+        Normalized integraged variance I_t = \int_0^T sigma_t dt / (sigma_0^2 T)
+
+        Args:
+            sigma_path: sigma path
+
+        Returns:
+
+        """
+        weight = np.ones(sigma_path.shape[0])
+        weight[[0, -1]] = 0.5
+        weight /= weight.sum()
+        intvar = np.sum(weight[:, None] * sigma_path**2, axis=0)
+        return intvar
+
+
+class ModelBsmMC(ModelABC):
+    """
+    MC for Bsm SABR (beta = 1)
+    """
+
     beta = 1.0   # fixed (not used)
-    vov, rho = 0.0, 0.0
-    sigma, intr, divr = None, None, None
-    bsm_model = None
-    '''
-    You may define more members for MC: time step, etc
-    '''
-    
-    def __init__(self, sigma, vov=0, rho=0.0, beta=1.0, intr=0, divr=0, n_samples=1_000, n_steps=100):
-        self.n_samples = n_samples
-        self.n_steps = n_steps
-        self.sigma = sigma
-        self.vov = vov
-        self.rho = rho
-        self.intr = intr
-        self.divr = divr
-        self.bsm_model = pf.Bsm(sigma, intr=intr, divr=divr)
+
+    def price(self, strike, spot, texp=1.0, cp=1):
+        '''
+        Your MC routine goes here.
+        (1) Generate the paths of sigma_t. 
+
+        vol_path = self.sigma_path(texp)  # the path of sigma_t
+        sigma_t = vol_path[-1, :]  # sigma_t at maturity (t=T)
+
+        (2) Simulate S_0, ...., S_T.
+
+        Z = np.random.standard_normal()
+
+        (3) Calculate option prices (vector) for all strikes
+        '''
+
+        n_dt = int(np.ceil(texp / self.dt))
+        tobs = np.arange(1, n_dt + 1) / n_dt * texp
+        dt = texp / n_dt
+        assert texp == tobs[-1]
         
-    def bsm_vol(self, strike, spot, texp=None):
-        ''''
-        should be same as bsm_vol method in ModelBsmMC (just copy & paste)
-        '''
-        price = self.price(self, strike, spot)
-        return self.bsm_model.impvol(price, strike, spot, texp)
-    
-    def price(self, strike, spot, texp=None, cp=1):
-        '''
-        Your MC routine goes here
-        Generate paths for vol only. Then compute integrated variance and BSM price.
-        Then get prices (vector) for all strikes
-        You may fix the random number seed
-        '''
-#         np.random.seed(12345)
+        # (1) Generate correlated BMs
+        Z = np.random.standard_normal((n_dt, self.n_path)) # BM driving the volatility
+        W = self.rho * Z + np.sqrt(1 - self.rho ** 2) * np.random.randn(n_dt, self.n_path) # BM driving the asset price
         
-        # Set T to expiration time
-        delta_t = texp / self.n_steps
+        # (2) Simulate S_0, ...., S_T and sigma_0, ...., sigma_T.
         # Allocate space for storing the results
-        prices = np.zeros(self.n_samples)
-        option_prices = np.zeros((self.n_samples, len(strike)))
-        vols = np.zeros((self.n_steps, self.n_samples))
-        
-        # Generate Random Numbers
-        Z = np.random.randn(self.n_steps, self.n_samples)        
+        stock_path = np.zeros((n_dt, self.n_path))
+        vol_path = np.zeros((n_dt, self.n_path))
         
         # Set the initial values
-        vols[0, :] = self.sigma
+        stock_path[0, :] = spot            
+        vol_path[0, :] = self.sigma
         
-        for k in range(self.n_steps-1):
-            vols[k+1, :] = vols[k, :] * np.exp(self.vov * Z[k, :] * np.sqrt(delta_t) - 0.5 * self.vov**2 * delta_t)
+        for k in range(n_dt-1):
+            stock_path[k+1, :] = stock_path[k, :]*np.exp(vol_path[k, :] * W[k, :] * np.sqrt(dt) - 0.5 * vol_path[k, :]**2 * dt)
+            vol_path[k+1, :] = vol_path[k, :]*np.exp(self.vov * Z[k, :] * np.sqrt(dt) - 0.5 * self.vov**2 * dt)
             
-        sigma_T = vols[-1]
-        I_T = np.mean(vols**2, axis=0)/self.sigma**2
+        # (3) Calculate option prices (vector) for all strikes
         
-        sigma_cmc = self.sigma * np.sqrt((1 - self.rho**2)* I_T)
-        spot_cmc = spot * np.exp(self.rho/self.vov * (sigma_T - self.sigma) -\
-                                 0.5 * self.rho**2 * self.sigma**2 * texp * I_T)
-                   
-        for i in range(self.n_samples):
-            bsm_model = pf.Bsm(sigma_cmc[i], self.intr, self.divr, is_fwd=True)
-#             option_prices[i, :] = np.array([bsm_model.price(K, spot_cmc[i], texp, cp) for K in strike])
-            option_prices[i, :] = bsm_model.price(strike, spot_cmc[i], texp, cp)
-            
-        return np.mean(option_prices, axis=0)
+        S_T = stock_path[-1, :]
+        df = np.exp(-self.intr * texp)
+        p = df * np.mean(np.fmax(cp*(S_T - strike[:, None]), 0.0), axis=1)
+        return p
 
-
-'''
-Conditional MC model class for Beta=0
-'''
-class ModelNormalCondMC:
-    beta = 0.0   # fixed (not used)
-    vov, rho = 0.0, 0.0
-    sigma, intr, divr = None, None, None
-    normal_model = None
     
-    def __init__(self, sigma, vov=0, rho=0.0, beta=0.0, intr=0, divr=0, n_samples=1_000, n_steps=100):
-        self.n_samples = n_samples
-        self.n_steps = n_steps
-        self.sigma = sigma
-        self.vov = vov
-        self.rho = rho
-        self.intr = intr
-        self.divr = divr
-        self.normal_model = pf.Norm(sigma, intr=intr, divr=divr)
-        
-    def norm_vol(self, strike, spot, texp):
-        ''''
-        should be same as norm_vol method in ModelNormalMC (just copy & paste)
+class ModelNormMC(ModelBsmMC):
+    """
+    MC for Normal SABR (beta = 0)
+    """
+
+    beta = 0   # fixed (not used)
+
+    def price(self, strike, spot, texp=1.0, cp=1):
         '''
-        price = self.price(self, strike, spot)
-        return self.normal_model.impvol(price, strike, spot, texp)
-        
-    def price(self, strike, spot, texp, cp=1):
+        Your MC routine goes here.
+        (1) Generate the paths of sigma_t. 
+
+        vol_path = self.sigma_path(texp)  # the path of sigma_t
+        sigma_t = vol_path[-1, :]  # sigma_t at maturity (t=T)
+
+        (2) Simulate S_0, ...., S_T.
+
+        Z = np.random.standard_normal()
+
+        (3) Calculate option prices (vector) for all strikes
         '''
-        Your MC routine goes here
-        Generate paths for vol only. Then compute integrated variance and normal price.
-        You may fix the random number seed
-        '''
-#         np.random.seed(12345)
         
-        # Set T to expiration time
-        delta_t = texp / self.n_steps
+        n_dt = int(np.ceil(texp / self.dt))
+        tobs = np.arange(1, n_dt + 1) / n_dt * texp
+        dt = texp / n_dt
+        assert texp == tobs[-1]
+        
+        # (1) Generate correlated BMs
+        Z = np.random.standard_normal((n_dt, self.n_path)) # BM driving the volatility
+        W = self.rho * Z + np.sqrt(1 - self.rho ** 2) * np.random.randn(n_dt, self.n_path) # BM driving the asset price
+        
+        # (2) Simulate S_0, ...., S_T and sigma_0, ...., sigma_T.
         # Allocate space for storing the results
-        prices = np.zeros(self.n_samples)
-        option_prices = np.zeros((self.n_samples, len(strike)))
-        vols = np.zeros((self.n_steps, self.n_samples))
-        
-        # Generate Random Numbers
-        Z = np.random.randn(self.n_steps, self.n_samples)        
+        stock_path = np.zeros((n_dt, self.n_path))
+        vol_path = np.zeros((n_dt, self.n_path))
         
         # Set the initial values
-        vols[0, :] = self.sigma
+        stock_path[0, :] = spot         
+        vol_path[0, :] = self.sigma
         
-        for k in range(self.n_steps-1):
-            vols[k+1, :] = vols[k, :] * np.exp(self.vov * Z[k, :] * np.sqrt(delta_t) - 0.5 * self.vov**2 * delta_t)
+        for k in range(n_dt-1):
+            stock_path[k+1, :] = stock_path[k, :]+ vol_path[k, :] * W[k, :] * np.sqrt(dt) 
+            vol_path[k+1, :] = vol_path[k, :]*np.exp(self.vov * Z[k, :] * np.sqrt(dt) - 0.5 * self.vov**2 * dt)
             
-        sigma_T = vols[-1]
-        I_T = np.mean(vols**2, axis=0)/self.sigma**2
+        # (3) Calculate option prices (vector) for all strikes
         
-        sigma_cmc = self.sigma * np.sqrt((1 - self.rho**2)* I_T)
-        spot_cmc = spot + self.rho/self.vov * (sigma_T - self.sigma)
-                   
-        for i in range(self.n_samples):
-            normal_model = pf.Norm(sigma_cmc[i], self.intr, self.divr, is_fwd=True)
-#             option_prices[i, :] = np.array([normal_model.price(K, spot_cmc[i], texp, cp) for K in strike])
-            option_prices[i, :] = normal_model.price(strike, spot_cmc[i], texp, cp)
-                
-        return np.mean(option_prices, axis=0)
+        S_T = stock_path[-1, :]
+        df = np.exp(-self.intr * texp)
+        p = df * np.mean(np.fmax(cp*(S_T - strike[:, None]), 0.0), axis=1)
+        return p
+
+    
+class ModelBsmCondMC(ModelBsmMC):
+    """
+    Conditional MC for Bsm SABR (beta = 1)
+    """
+
+    beta = 1
+    
+    def price(self, strike, spot, texp=1.0, cp=1):
+        '''
+        Your MC routine goes here.
+        (1) Generate the paths of sigma_t and normalized integrated variance
+
+        vol_path = self.sigma_path(texp)  # the path of sigma_t
+        sigma_t = vol_path[-1, :]  # sigma_t at maturity (t=T)
+        I_t = self.intvar_normalized(vol_path) 
+
+        (2) Calculate the equivalent spot and volatility of the BS model
+
+        vol = 
+        spot_equiv = 
+
+        (3) Calculate option prices (vector) by averaging the BS prices
+
+        m = self.base_model(vol)
+        p = np.mean(m.price(strike[:, None], spot_equiv, texp, cp), axis=1)
+        '''
+        n_dt = int(np.ceil(texp / self.dt))
+        tobs = np.arange(1, n_dt + 1) / n_dt * texp
+        dt = texp / n_dt
+        assert texp == tobs[-1]
+        
+        # (1) Generate the paths of sigma_t and normalized integrated variance
+        # Simulate the volatility path as in the previous exercise.
+        vol_path = np.zeros((n_dt, self.n_path))
+        vol_path[0, :] = self.sigma
+        Z = np.random.standard_normal((n_dt, self.n_path)) # BM driving the volatility
+        for k in range(n_dt-1):
+            vol_path[k+1, :] = vol_path[k, :]*np.exp(self.vov * Z[k, :] * np.sqrt(dt) - 0.5 * self.vov**2 * dt)
+        
+        sigma_t = vol_path[-1, :]                            # sigma_t at maturity (t=T)
+        I_t = self.intvar_normalized(vol_path)/self.sigma**2 # normalized integrated variance
+
+        # (2) Calculate the equivalent spot and volatility of the BS model 
+        vol = self.sigma * np.sqrt((1 - self.rho**2)* I_t)
+        spot_equiv = spot * np.exp(self.rho/self.vov * (sigma_t - self.sigma) -\
+                                 0.5 * self.rho**2 * self.sigma**2 * texp * I_t)
+
+        # (3) Calculate option prices (vector) by averaging the BS prices
+        m = self.base_model(vol)
+        p = np.mean(m.price(strike[:, None], spot_equiv, texp, cp), axis=1)
+        
+        return p
+
+    
+class ModelNormCondMC(ModelNormMC):
+    """
+    Conditional MC for Bsm SABR (beta = 0)
+    """
+
+    beta = 0
+    
+    def price(self, strike, spot, texp=1.0, cp=1):
+        '''
+        Your MC routine goes here.
+        (1) Generate the paths of sigma_t and normalized integrated variance
+
+        vol_path = self.sigma_path(texp)  # the path of sigma_t
+        sigma_t = vol_path[-1, :]  # sigma_t at maturity (t=T)
+        I_t = self.intvar_normalized(vol_path) 
+
+        (2) Calculate the equivalent spot and volatility of the Bachelier model
+
+        vol = 
+        spot_equiv = 
+
+        (3) Calculate option prices (vector) by averaging the BS prices
+
+        m = self.base_model(vol)
+        p = np.mean(m.price(strike[:, None], spot_equiv, texp, cp), axis=1)
+        '''
+        n_dt = int(np.ceil(texp / self.dt))
+        tobs = np.arange(1, n_dt + 1) / n_dt * texp
+        dt = texp / n_dt
+        assert texp == tobs[-1]
+
+        # (1) Generate the paths of sigma_t and normalized integrated variance
+        # Simulate the volatility path as in the previous exercise.
+        vol_path = np.zeros((n_dt, self.n_path))
+        vol_path[0, :] = self.sigma
+        Z = np.random.standard_normal((n_dt, self.n_path)) # BM driving the volatility
+        for k in range(n_dt-1):
+            vol_path[k+1, :] = vol_path[k, :]*np.exp(self.vov * Z[k, :] * np.sqrt(dt) - 0.5 * self.vov**2 * dt)
+        
+        sigma_t = vol_path[-1, :]                            # sigma_t at maturity (t=T)
+        I_t = self.intvar_normalized(vol_path)/self.sigma**2 # normalized integrated variance
+
+        # (2) Calculate the equivalent spot and volatility of the BS model 
+        vol = self.sigma * np.sqrt((1 - self.rho**2)* I_t)
+        spot_equiv = spot + self.rho/self.vov * (sigma_t - self.sigma) 
+
+        # (3) Calculate option prices (vector) by averaging the BS prices
+        m = self.base_model(vol)
+        p = np.mean(m.price(strike[:, None], spot_equiv, texp, cp), axis=1)
+        
+        return p
+    
+
+    
